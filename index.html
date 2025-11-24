@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NPS Now</title>
+
+  <!-- React / ReactDOM (required before Recharts UMD) -->
+  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <!-- Tailwind CDN for styling -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- NOTE: We will dynamically load Recharts from a specific version to improve compatibility. If it fails to load,
+       the app falls back to a lightweight SVG donut so the page still works. -->
+</head>
+<body class="bg-slate-100 p-6">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect } = React;
+
+    const COLORS = ["#10B981", "#F59E0B", "#EF4444"]; // Promoter, Passive, Detractor
+    const pct = (val, total) => total === 0 ? 0 : (val / total) * 100;
+    const round2 = (n) => Math.round(n * 100) / 100;
+
+    // Dynamically load Recharts UMD (specific version)
+    function loadRecharts(version = '2.1.16', timeoutMs = 5000) {
+      return new Promise((resolve, reject) => {
+        if (window.Recharts) return resolve(window.Recharts);
+        const script = document.createElement('script');
+        script.src = `https://unpkg.com/recharts@${version}/umd/Recharts.min.js`;
+        script.async = true;
+        script.onload = () => {
+          // small delay to ensure the global is usable
+          setTimeout(() => {
+            if (window.Recharts) resolve(window.Recharts);
+            else reject(new Error('Recharts loaded but global Recharts is not available'));
+          }, 50);
+        };
+        script.onerror = () => reject(new Error('Failed to load Recharts script'));
+        document.head.appendChild(script);
+
+        // timeout
+        setTimeout(() => reject(new Error('Loading Recharts timed out')), timeoutMs);
+      });
+    }
+
+    // Lightweight SVG donut fallback when Recharts isn't available
+    function DonutFallback({ data, size = 120 }) {
+      const total = data.reduce((s, d) => s + d.value, 0);
+      let cumulative = 0;
+      const viewBoxSize = 100;
+      const radius = 40;
+      const center = viewBoxSize / 2;
+
+      function describeArc(startPct, endPct) {
+        const startAngle = startPct * 2 * Math.PI - Math.PI / 2;
+        const endAngle = endPct * 2 * Math.PI - Math.PI / 2;
+        const x1 = center + radius * Math.cos(startAngle);
+        const y1 = center + radius * Math.sin(startAngle);
+        const x2 = center + radius * Math.cos(endAngle);
+        const y2 = center + radius * Math.sin(endAngle);
+        const largeArc = endPct - startPct > 0.5 ? 1 : 0;
+        return `M ${center} ${center} L ${x1} ${y1} A ${radius} ${radius} 0 ${largeArc} 1 ${x2} ${y2} Z`;
+      }
+
+      return (
+        <svg viewBox={`0 0 ${viewBoxSize} ${viewBoxSize}`} width={size} height={size}>
+          {data.map((d, i) => {
+            const startPct = cumulative / total;
+            cumulative += d.value;
+            const endPct = cumulative / total;
+            const path = describeArc(startPct, endPct);
+            return <path key={i} d={path} fill={COLORS[i % COLORS.length]} stroke="#fff" strokeWidth="0.5" />;
+          })}
+        </svg>
+      );
+    }
+
+    function App() {
+      const [basePromoters, setBasePromoters] = useState(0);
+      const [basePassives, setBasePassives] = useState(0);
+      const [baseDetractors, setBaseDetractors] = useState(0);
+
+      const [addPromoters, setAddPromoters] = useState(0);
+      const [addPassives, setAddPassives] = useState(0);
+      const [addDetractors, setAddDetractors] = useState(0);
+
+      const [adds, setAdds] = useState([]);
+
+      // Recharts state
+      const [rechartsLoaded, setRechartsLoaded] = useState(false);
+      const [rechartsError, setRechartsError] = useState(null);
+
+      useEffect(() => {
+        // Try to load Recharts dynamically. If it fails, we'll fall back to SVG.
+        let cancelled = false;
+        loadRecharts().then(() => {
+          if (!cancelled) setRechartsLoaded(true);
+        }).catch(err => {
+          console.warn('Recharts load failed:', err);
+          if (!cancelled) setRechartsError(err.message);
+        });
+        return () => { cancelled = true; };
+      }, []);
+
+      const baseTotal = Number(basePromoters) + Number(basePassives) + Number(baseDetractors);
+      const baseNPS = baseTotal === 0 ? 0 : ((Number(basePromoters) - Number(baseDetractors)) / baseTotal) * 100;
+
+      function addCurrent() {
+        if (Number(addPromoters) + Number(addPassives) + Number(addDetractors) === 0) return;
+        setAdds(prev => [{ id: Date.now(), promoters: Number(addPromoters), passives: Number(addPassives), detractors: Number(addDetractors) }, ...prev]);
+      }
+
+      const addsTotal = adds.reduce((acc, c) => {
+        acc.promoters += c.promoters;
+        acc.passives += c.passives;
+        acc.detractors += c.detractors;
+        return acc;
+      }, { promoters: 0, passives: 0, detractors: 0 });
+
+      const combinedPromoters = Number(basePromoters) + addsTotal.promoters;
+      const combinedPassives = Number(basePassives) + addsTotal.passives;
+      const combinedDetractors = Number(baseDetractors) + addsTotal.detractors;
+
+      const combinedTotal = combinedPromoters + combinedPassives + combinedDetractors;
+      const hypotheticalNPS = combinedTotal === 0 ? 0 : ((combinedPromoters - combinedDetractors) / combinedTotal) * 100;
+      const delta = hypotheticalNPS - baseNPS;
+
+      const basePieData = [
+        { name: "Promoters", value: Number(basePromoters) },
+        { name: "Passives", value: Number(basePassives) },
+        { name: "Detractors", value: Number(baseDetractors) }
+      ];
+
+      const combinedPieData = [
+        { name: "Promoters", value: combinedPromoters },
+        { name: "Passives", value: combinedPassives },
+        { name: "Detractors", value: combinedDetractors }
+      ];
+
+      // Access Recharts components lazily from window.Recharts if available
+      const Recharts = window.Recharts || null;
+      const PieChart = Recharts ? Recharts.PieChart : null;
+      const Pie = Recharts ? Recharts.Pie : null;
+      const Cell = Recharts ? Recharts.Cell : null;
+      const Tooltip = Recharts ? Recharts.Tooltip : null;
+      const Legend = Recharts ? Recharts.Legend : null;
+      const ResponsiveContainer = Recharts ? Recharts.ResponsiveContainer : null;
+
+      return (
+        <div className="max-w-5xl mx-auto bg-white shadow rounded-xl p-6">
+          <h1 className="text-2xl font-semibold mb-4">NPS Calculator</h1>
+
+          {/*rechartsError && <div className="p-3 mb-4 rounded bg-yellow-100 text-yellow-800">Notice: Charting library (Recharts) failed to load. Showing a lightweight fallback chart. Error: {rechartsError}</div>}
+
+          {/* Base Survey */}
+          <div className="grid md:grid-cols-3 gap-4 mb-6">
+            <div className="bg-slate-50 p-4 rounded">
+              <h2 className="font-medium mb-2">Base Survey (counts)</h2>
+              <div className="grid grid-cols-3 gap-2">
+                <input type="number" value={basePromoters} onChange={e => setBasePromoters(e.target.value)} className="p-2 border rounded" />
+                <input type="number" value={basePassives} onChange={e => setBasePassives(e.target.value)} className="p-2 border rounded" />
+                <input type="number" value={baseDetractors} onChange={e => setBaseDetractors(e.target.value)} className="p-2 border rounded" />
+              </div>
+              <div className="text-sm mt-3">Base respondents: <b>{baseTotal}</b></div>
+              <div className="text-sm mt-1">Base NPS: <b>{round2(baseNPS)}</b></div>
+            </div>
+
+            {/* NPS Display */}
+            <div className="bg-slate-50 p-4 rounded">
+              <h2 className="font-medium mb-2">Current NPS</h2>
+              <div className="text-4xl font-bold">{round2(baseNPS)}</div>
+              
+            </div>
+          </div>
+
+          {/* Add Survey */}
+          <div className="grid md:grid-cols-3 gap-4 mb-6">
+            <div className="bg-slate-50 p-4 rounded">
+              <h3 className="font-medium mb-2">Add Additional Survey</h3>
+              <div className="grid grid-cols-3 gap-2">
+                <input type="number" value={addPromoters} onChange={e => setAddPromoters(e.target.value)} className="p-2 border rounded" />
+                <input type="number" value={addPassives} onChange={e => setAddPassives(e.target.value)} className="p-2 border rounded" />
+                <input type="number" value={addDetractors} onChange={e => setAddDetractors(e.target.value)} className="p-2 border rounded" />
+              </div>
+              <div className="flex gap-2 mt-3">
+                <button onClick={addCurrent} className="px-3 py-2 bg-blue-600 text-white rounded">Add</button>
+                <button onClick={() => { setAddPromoters(0); setAddPassives(0); setAddDetractors(0); }} className="px-3 py-2 border rounded">Clear</button>
+              </div>
+              <div className="text-xs text-slate-500 mt-2">Enter counts. You can add multiple surveys.</div>
+            </div>
+
+            {/* Hypothetical */}
+            <div className="md:col-span-2 bg-slate-50 p-4 rounded">
+              <h3 className="font-medium mb-2">Hypothetical Result</h3>
+              <div className="flex items-center gap-6">
+                <div>
+                  <div className="text-4xl font-bold">{round2(hypotheticalNPS)}</div>
+                  <div className={`text-sm mt-1 ${delta >= 0 ? "text-green-600" : "text-red-600"}`}>
+                    Delta: {delta >= 0 ? "+" : ""}{round2(delta)}
+                  </div>
+                  <div className="text-xs text-slate-500 mt-2">Combined respondents: <b>{combinedTotal}</b></div>
+                </div>
+
+                <div className="flex-1 h-40 flex items-center justify-center">
+                  {rechartsLoaded && Recharts && PieChart && Pie ? (
+                    // Use Recharts if loaded
+                    <div style={{ width: 220, height: 140 }}>
+                      <ResponsiveContainer width="100%" height="100%">
+                        <PieChart>
+                          <Pie data={combinedPieData} dataKey="value" nameKey="name" outerRadius={50} innerRadius={20}>
+                            {combinedPieData.map((entry, idx) => <Cell key={idx} fill={COLORS[idx % COLORS.length]} />)}
+                          </Pie>
+                          <Tooltip /><Legend />
+                        </PieChart>
+                      </ResponsiveContainer>
+                    </div>
+                  ) : (
+                    // Fallback donut
+                    <DonutFallback data={combinedPieData} size={140} />
+                  )}
+                </div>
+              </div>
+
+              <div className="mt-3">
+                <h4 className="font-medium">Added surveys ({adds.length})</h4>
+                <div className="space-y-2 mt-2">
+                  {adds.length === 0 && <div className="text-sm text-slate-500">No additions yet.</div>}
+                  {adds.map((a) => (
+                    <div key={a.id} className="flex items-center justify-between bg-white p-2 border rounded">
+                      <div className="text-sm">P: {a.promoters} • Pa: {a.passives} • D: {a.detractors}</div>
+                      <div className="flex gap-2">
+                        <button onClick={() => setAdds(prev => prev.filter(x => x.id !== a.id))} className="text-xs px-2 py-1 border rounded">Remove</button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Breakdown */}
+          <div className="bg-slate-50 p-4 rounded">
+            <h3 className="font-medium mb-2">Breakdown</h3>
+            <div className="grid md:grid-cols-3 gap-4">
+              <div className="p-3 bg-white rounded shadow-sm">
+                <div className="text-xs text-slate-500">Base (%)</div>
+                <div className="text-lg font-semibold">Promoters {round2(pct(basePromoters, baseTotal))}%</div>
+                <div className="text-sm">Passives {round2(pct(basePassives, baseTotal))}%</div>
+                <div className="text-sm">Detractors {round2(pct(baseDetractors, baseTotal))}%</div>
+              </div>
+
+              <div className="p-3 bg-white rounded shadow-sm">
+                <div className="text-xs text-slate-500">Added (totals)</div>
+                <div className="text-lg font-semibold">Promoters {addsTotal.promoters}</div>
+                <div className="text-sm">Passives {addsTotal.passives}</div>
+                <div className="text-sm">Detractors {addsTotal.detractors}</div>
+              </div>
+
+              <div className="p-3 bg-white rounded shadow-sm">
+                <div className="text-xs text-slate-500">Combined (%)</div>
+                <div className="text-lg font-semibold">Promoters {round2(pct(combinedPromoters, combinedTotal))}%</div>
+                <div className="text-sm">Passives {round2(pct(combinedPassives, combinedTotal))}%</div>
+                <div className="text-sm">Detractors {round2(pct(combinedDetractors, combinedTotal))}%</div>
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-6 text-sm text-slate-600">
+           made with ❤️ by Tarek
+          </div>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
